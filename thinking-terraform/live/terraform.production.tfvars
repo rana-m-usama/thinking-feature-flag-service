@@ -1,0 +1,66 @@
+# Production. ~$63/month with no load balancer, ~$81 with one.
+#
+# Sized for the $300 free-tier grant: roughly 3 months of runway with headroom for
+# mistakes, rather than 2 months and a surprise.
+
+project_id  = "thinking-flagsvc-0e6b"
+environment = "production"
+region      = "asia-south1"
+
+# --- Database: ~$9/mo ---------------------------------------------------------------
+# db-f1-micro is shared-core, and correct here rather than merely cheap: the hot path is
+# served from Redis and reaches Postgres only on a cache miss. The database is doing flag
+# CRUD and audit inserts — a few writes a day — not serving evaluation traffic.
+db_tier                   = "db-f1-micro"
+db_availability_type      = "ZONAL"
+db_disk_size_gb           = 10
+db_deletion_protection    = true
+db_point_in_time_recovery = true
+
+# --- Cache: ~$35/mo — the single biggest line -----------------------------------------
+# 1GB BASIC is the smallest Memorystore SKU in existence. Not a sizing decision; a floor.
+redis_tier      = "BASIC"
+redis_memory_gb = 1
+
+# --- Cloud Run: ~$5/mo ----------------------------------------------------------------
+# min_instances = 1 keeps one container warm. This costs ~$5/month and buys away a ~2s
+# cold start. A flag service sits on the critical path of every request in every app that
+# consumes it — a cold start here is a latency spike on someone else's checkout page, and
+# they cannot tell it was us.
+min_instances = 1
+max_instances = 10
+cpu           = "1"
+memory        = "512Mi"
+concurrency   = 80
+
+# THE CONNECTION MATH, which is what actually breaks first under load.
+#
+# db-f1-micro allows ~25 connections. Pool is PER CONTAINER, so the ceiling is:
+#   max_instances x (db_pool_size + db_max_overflow) = 10 x (2 + 1) = 30
+#
+# 30 > 25. Deliberately: reaching it needs all 10 instances saturated AND every one
+# holding its full overflow, which for an async app whose hot path never touches the
+# database means a genuine incident, not normal traffic. If that ever happens the fix is
+# db-g1-small (~$25/mo, 50 connections) — not lowering the pool, which would just move
+# the failure to connection starvation inside each container.
+db_pool_size    = 2
+db_max_overflow = 1
+
+cache_ttl_seconds     = 300
+rate_limit_per_minute = 1000
+log_level             = "INFO"
+
+# --- Load balancer: +$18/mo, needs a domain -------------------------------------------
+# Empty = no LB. Cloud Run's run.app URL already has valid Google-managed TLS, so an LB
+# without a domain would mean plain HTTP — paying $18/month to make security worse.
+# Set this to a domain you control and an LB appears, ingress locks to it, and the
+# run.app URL stops answering.
+domain             = ""
+enable_cloud_armor = true
+
+# --- CI/CD ---------------------------------------------------------------------------
+github_repository = "rana-m-usama/thinking-feature-flag-service"
+
+# --- Monitoring ----------------------------------------------------------------------
+alert_email          = "usama.dev100@gmail.com"
+latency_threshold_ms = 500

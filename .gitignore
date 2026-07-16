@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Local environment — real credentials. .env.example is the committed template.
+.env
+
+# Terraform (see thinking-terraform/.gitignore for the detail)
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform/
+
+# macOS
+.DS_Store

@@ -1,0 +1,26 @@
+# Terraform state — contains the generated database password and admin API key in
+# PLAINTEXT. random_password writes its result to state; that is unavoidable. Committing
+# this would publish the credentials that Secret Manager exists to protect.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Saved plans. A plan file embeds the values of every variable, including sensitive ones.
+*.tfplan
+
+# Provider binaries — hundreds of MB, re-downloaded by init.
+.terraform/
+.terraform.tfstate.lock.info
+
+# Local overrides
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+
+# NOT ignored, on purpose:
+#   terraform.*.tfvars    — environment config is code and belongs in review
+#   .terraform.lock.hcl   — pins provider versions; committing it is the point
+#   bootstrap/terraform.tfstate is still ignored above. It holds no secrets (a bucket and
+#   a list of enabled APIs), but it does record real resource IDs, and the bucket it
+#   creates is trivially recreated by re-running bootstrap.

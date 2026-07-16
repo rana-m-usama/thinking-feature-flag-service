@@ -1,0 +1,99 @@
+# Local development dependencies.
+#
+# Containers here stand in for managed GCP services, and only for local development:
+#
+#   postgres  ->  Cloud SQL for PostgreSQL
+#   redis     ->  Memorystore for Redis
+#
+# Nothing in this file is deployed. The point is that the application talks to both
+# through a URL from the environment, so "local Postgres in a container" and "Cloud SQL
+# over a unix socket" differ by a DATABASE_URL and nothing else — no code path, no
+# conditional, no driver swap. That is the property worth protecting: if local and
+# production diverge in code, local stops being evidence about production.
+#
+# The `api` service is behind a profile so the default `up` gives you just the
+# datastores and you run uvicorn on the host with --reload. That is the tighter loop.
+# Use `--profile full` to exercise the real image.
+#
+#   docker compose -f docker-compose.dev.yml up -d            # datastores only
+#   docker compose -f docker-compose.dev.yml --profile full up # + the API image
+#
+# PORTS: deliberately 5433 and 6380 on the host, not 5432 and 6379.
+#
+# A developer machine very often already runs a native Postgres or Redis on the default
+# port, and Docker's published port loses to whatever bound first. Postgres at least
+# fails loudly ("role flagsvc does not exist" — because you reached the *other* server).
+# Redis fails silently: it accepts the connection and the service happily caches into
+# someone's local Redis, which is a debugging session nobody enjoys. Non-default host
+# ports make the collision impossible rather than merely unlikely.
+#
+# The containers still listen on the standard ports internally, so the `api` service
+# below talks to postgres:5432 and redis:6379 over the compose network as normal.
+
+# Pinned project name. Compose otherwise derives it from the directory, so container
+# names would change the moment someone renames or clones this folder into a different
+# path — and every `docker exec flagsvc-postgres-1 ...` in the README would break.
+name: flagsvc
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: flagsvc
+      POSTGRES_PASSWORD: flagsvc
+      POSTGRES_DB: flagsvc
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` returns true before Postgres finishes its first-boot init, so the
+      # database name is included — without it, the API can start against a server that
+      # exists but has no database yet and fail its first query.
+      test: ["CMD-SHELL", "pg_isready -U flagsvc -d flagsvc"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # No persistence: this is a cache. Anything that cannot survive losing it entirely
+    # does not belong here, and appendonly would only disguise that mistake locally.
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      APP_ENV: local
+      LOG_LEVEL: DEBUG
+      DATABASE_URL: postgresql+asyncpg://flagsvc:flagsvc@postgres:5432/flagsvc
+      REDIS_URL: redis://redis:6379/0
+      ADMIN_API_KEY: dev-admin-key-change-me
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Migrations run at container start for local convenience only. In production this
+    # is a separate CI step that must succeed before any traffic shifts to the new
+    # revision — see the README. Running migrations from N autoscaled instances is a
+    # race, and "the deploy migrated the database" is not something to discover from an
+    # error rate graph.
+    command: >
+      sh -c "alembic upgrade head &&
+             exec uvicorn app.main:app --host 0.0.0.0 --port 8080"
+
+volumes:
+  postgres_data:

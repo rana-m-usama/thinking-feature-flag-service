@@ -1,0 +1,53 @@
+[project]
+name = "flagsvc"
+version = "0.1.0"
+description = "Multi-tenant configuration and feature flag service"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "redis>=5.2.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# The SQLAlchemy engine is created once at `app.db` import and its pooled asyncpg
+# connections bind to the event loop that opened them. With the default per-test loop,
+# the second test to run inherits connections from a closed loop and asyncpg raises
+# "attached to a different loop". One session-wide loop matches the lifetime of the
+# module-level engine, which is also how the app actually runs: one loop, one engine,
+# one process.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# B008 forbids function calls in argument defaults. That is exactly how FastAPI
+# declares dependencies (`db: Session = Depends(get_db)`), so the rule is unusable
+# here — it would fire on every route in the codebase and teach us to ignore ruff.
+ignore = ["B008"]

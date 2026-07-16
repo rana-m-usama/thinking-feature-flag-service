@@ -30,23 +30,6 @@ Every endpoint takes an `X-API-Key` header.
   cannot authenticate its own creation: at that moment neither it nor its key exists yet.
 
 Keys are stored as SHA-256 hashes and shown exactly once, at registration.
-
-### Evaluation and determinism
-
-`user_id` is opaque and is never stored. Rollout membership is
-`sha256(flag_key + ":" + user_id)[:4] % 100 < rollout_percentage` — a pure function, so
-the same user always resolves to the same value for a given flag, on every instance,
-forever. Raising a rollout percentage only ever adds users to the cohort; nobody loses a
-feature mid-session.
-
-`flag_key` is mixed into the hash so that each flag partitions the user base
-independently. Without it the same unlucky cohort would land in the first 10% of every
-rollout and every experiment would confound every other.
-
-Precedence: **archived → disabled → targeting rules → rollout → on value.** Targeting
-beats the rollout, so a pinned QA user is not left testing a coin flip. The kill switch
-beats targeting, so turning a flag off during an incident is never second-guessed by a
-rule someone wrote last month.
 """
 
 TAGS_METADATA = [

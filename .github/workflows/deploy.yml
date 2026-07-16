@@ -31,7 +31,14 @@ env:
   REGION: asia-south1
   SERVICE: flagsvc-production
   MIGRATE_JOB: flagsvc-production-migrate
-  REGISTRY: asia-south1-docker.pkg.dev/thinking-flagsvc-0e6b/flagsvc-production
+  # Full image path: HOST / PROJECT / REPOSITORY / IMAGE.
+  #
+  # The trailing `/flagsvc` is the IMAGE name and is not optional. Terraform's
+  # artifact_registry_url output ends at the REPOSITORY, which is correct for the
+  # repository but is not a pushable image reference — Artifact Registry rejects it with
+  # "name invalid: Missing image name", after retrying every layer first, so the real
+  # error is buried under a screen of retry noise.
+  REGISTRY: asia-south1-docker.pkg.dev/thinking-flagsvc-0e6b/flagsvc-production/flagsvc
   # These two are NOT secrets and are intentionally in plain sight. The WIF provider path
   # and the service account email are both public identifiers; the security boundary is
   # the provider's attribute_condition, which pins this exact repository. A leaked
@@ -255,12 +262,16 @@ jobs:
           echo "Candidate now serving 100%."
 
       - name: Rollback on failure
-        # Fires if ANY step above failed after traffic moved. Instant and requires no
-        # rebuild, because the previous revision was never deleted — that is the entire
-        # reason to use revision traffic-splitting rather than a rolling update.
+        # Instant and requires no rebuild, because the previous revision was never
+        # deleted — that is the entire reason for revision traffic-splitting over a
+        # rolling update.
         #
-        # Skipped on a first deploy, when there is no previous revision to return to.
-        if: failure() && steps.snapshot.outputs.revision != ''
+        # Guarded on deploy_candidate having actually produced a revision. Without that,
+        # a failure in an EARLY step (lint, build, migrate) — before any traffic moved —
+        # still fired a production traffic shift. It was a no-op in practice, but a
+        # pipeline that touches production traffic when the build failed is one bad
+        # condition away from doing real damage. Roll back only from somewhere.
+        if: failure() && steps.deploy_candidate.outputs.revision != '' && steps.snapshot.outputs.revision != ''
         run: |
           echo "Deploy failed — returning 100% of traffic to ${{ steps.snapshot.outputs.revision }}"
           gcloud run services update-traffic "$SERVICE" --region="$REGION" \

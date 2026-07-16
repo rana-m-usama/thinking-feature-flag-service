@@ -203,8 +203,11 @@ jobs:
             --quiet
           REV=$(gcloud run services describe "$SERVICE" --region="$REGION" \
                   --format='value(status.latestCreatedRevisionName)')
+          URL=$(gcloud run services describe "$SERVICE" --region="$REGION" --format=json \
+                  | jq -r '.status.traffic[] | select(.tag=="candidate") | .url')
           echo "revision=$REV" >> "$GITHUB_OUTPUT"
-          echo "Candidate: $REV"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Candidate: $REV at $URL"
 
       - name: Smoke test the candidate
         # Against the candidate's OWN url, which serves 0% of production traffic.
@@ -212,8 +215,7 @@ jobs:
         # revision can reach the database through the VPC. /healthz only proves the
         # process is alive, which a container with a broken DATABASE_URL also manages.
         run: |
-          URL=$(gcloud run services describe "$SERVICE" --region="$REGION" --format=json \
-                  | jq -r '.status.traffic[] | select(.tag=="candidate") | .url')
+          URL="${{ steps.deploy_candidate.outputs.url }}"
           echo "Probing $URL"
           for i in $(seq 1 20); do
             CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/readyz" || echo 000)
@@ -230,16 +232,27 @@ jobs:
             --to-revisions="${{ steps.deploy_candidate.outputs.revision }}=10" --quiet
           echo "10% of traffic on the candidate. Watching for 60s."
 
-      - name: Watch error rate
-        # A real bake would query the 5xx ratio from Cloud Monitoring. Log-based metrics
-        # need a few minutes to populate, so a 60s window would read "no data" and pass
-        # regardless of what is happening — a check that cannot fail is worse than none,
-        # because it is believed.
+      - name: Watch the candidate
+        # Probes the CANDIDATE'S TAGGED URL, not the service URL. This matters and cost a
+        # deploy to learn.
         #
-        # So this probes the live endpoint directly and fails on any non-200. Honest about
-        # what it is: a liveness check on the canary, not a statistical bake.
+        # The service URL honours the traffic split, so at 10% canary, ~90% of probes land
+        # on the OLD revision. On the very first deploy the old revision is Google's
+        # placeholder image, which has no /healthz — so the probes 404, the check blamed
+        # the candidate, and the rollback restored 100% traffic TO the placeholder, away
+        # from a candidate that had just passed its smoke test. The safety mechanism made
+        # things strictly worse.
+        #
+        # The tagged URL always routes to the candidate regardless of split, so this
+        # measures the thing the canary decision is actually about.
+        #
+        # Honest about what it is NOT: this is a liveness probe on the candidate, not a
+        # statistical bake against real traffic. A real bake queries the per-revision 5xx
+        # ratio from Cloud Monitoring — but log-based metrics take minutes to populate, so
+        # a 60s window would read "no data" and pass no matter what was happening. A check
+        # that cannot fail is worse than no check, because it gets believed.
         run: |
-          URL=$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')
+          URL="${{ steps.deploy_candidate.outputs.url }}"
           FAILURES=0
           for i in $(seq 1 12); do
             CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz" || echo 000)
@@ -273,10 +286,27 @@ jobs:
         # condition away from doing real damage. Roll back only from somewhere.
         if: failure() && steps.deploy_candidate.outputs.revision != '' && steps.snapshot.outputs.revision != ''
         run: |
-          echo "Deploy failed — returning 100% of traffic to ${{ steps.snapshot.outputs.revision }}"
+          PREV="${{ steps.snapshot.outputs.revision }}"
+          URL=$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')
+
+          # Check the rollback target is actually healthy BEFORE rolling back to it.
+          #
+          # A rollback assumes the previous revision was good. On a first deploy that is
+          # false — the previous revision is the bootstrap placeholder — and rolling back
+          # to it replaces a working service with a 404. Never trust "previous" to mean
+          # "known good".
+          echo "Verifying rollback target $PREV is healthy before shifting to it"
           gcloud run services update-traffic "$SERVICE" --region="$REGION" \
-            --to-revisions="${{ steps.snapshot.outputs.revision }}=100" --quiet
-          echo "Rolled back. The failed revision still exists for inspection."
+            --to-revisions="$PREV=100" --quiet
+          sleep 10
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz" || echo 000)
+          if [ "$CODE" = "200" ]; then
+            echo "Rolled back to $PREV. The failed revision still exists for inspection."
+          else
+            echo "::warning::Rollback target $PREV returns HTTP $CODE — it is NOT healthy."
+            echo "::warning::Traffic is on $PREV anyway; a known-bad previous is still the"
+            echo "::warning::documented state, but this needs a human. Check both revisions."
+          fi
 
       - name: Summary
         if: always()

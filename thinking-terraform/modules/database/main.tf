@@ -11,11 +11,21 @@
 resource "random_password" "db" {
   length  = 32
   special = true
-  # Excluded because this password is interpolated into a URL. '@' terminates the
-  # userinfo section, '/' opens the path, '#' starts a fragment — a generated password
-  # containing any of them produces a DATABASE_URL that parses into something else
-  # entirely, and the failure looks like a wrong password rather than a broken URL.
-  override_special = "!#$%*()-_=+[]{}<>:?"
+
+  # RFC 3986 "unreserved" characters only: A-Z a-z 0-9 plus these four. Nothing here
+  # needs percent-encoding in any position of any URL, ever.
+  #
+  # The previous set was "!#$%*()-_=+[]{}<>:?" alongside a comment claiming '#' was
+  # excluded — it was not. '#' was generated, urlencode() turned it into %23, and Alembic
+  # fed the resulting URL to ConfigParser, where '%' is interpolation syntax. The apply
+  # succeeded; the migration job died at runtime on "invalid interpolation syntax".
+  #
+  # A comment describing a constraint the code does not enforce is worse than no comment:
+  # it is a claim reviewers trust. The constraint now lives in the value.
+  #
+  # 32 characters from a 66-symbol alphabet is ~193 bits — entropy is not the scarce
+  # resource here, and no punctuation is worth a URL that parses into something else.
+  override_special = "-._~"
 }
 
 resource "google_sql_database_instance" "main" {

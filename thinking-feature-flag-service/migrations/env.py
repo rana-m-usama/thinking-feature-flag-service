@@ -10,14 +10,25 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.config import settings
 from app.models import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", str(settings.database_url))
+
+# Deliberately NOT config.set_main_option("sqlalchemy.url", ...).
+#
+# Alembic's config is a ConfigParser, where '%' is interpolation syntax. A URL-encoded
+# password — which is what any generated password becomes once urlencode() has touched it
+# — is full of %2B, %23, %25. ConfigParser sees those and raises
+# "invalid interpolation syntax", so a perfectly valid URL is rejected by the config
+# layer rather than the database.
+#
+# The usual workaround is .replace('%', '%%'). This skips the layer instead: the engine is
+# built directly from settings below, so there is no parser between the URL and the
+# driver, and no escaping rule for a future reader to know about.
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -43,11 +54,8 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    connectable = async_engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=NullPool,
-    )
+    # Straight from settings — no ConfigParser in the path. See the note above.
+    connectable = create_async_engine(str(settings.database_url), poolclass=NullPool)
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()

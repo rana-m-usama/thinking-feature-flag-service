@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Multi-Tenant Feature Flag Service — Submission Report</title>
+<style>
+  @page { size: A4; margin: 16mm 14mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+    font-size: 9.6pt; line-height: 1.45; color: #1a1a1a; margin: 0;
+  }
+  h1 { font-size: 19pt; margin: 0 0 2px; letter-spacing: -0.4px; }
+  h2 {
+    font-size: 12pt; margin: 20px 0 7px; padding-bottom: 3px;
+    border-bottom: 2px solid #1a4d8f; color: #1a4d8f;
+    page-break-after: avoid;
+  }
+  h3 { font-size: 10pt; margin: 12px 0 4px; color: #333; page-break-after: avoid; }
+  p { margin: 5px 0; }
+  .sub { color: #666; font-size: 10pt; margin-bottom: 12px; }
+  .lede {
+    background: #f4f8fd; border-left: 3px solid #1a4d8f;
+    padding: 9px 12px; margin: 12px 0;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 7px 0; font-size: 8.8pt; }
+  th, td { border: 1px solid #d8d8d8; padding: 4px 7px; text-align: left; vertical-align: top; }
+  th { background: #eef3f9; font-weight: 600; }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 8.4pt;
+    background: #f2f2f2; padding: 1px 3px; border-radius: 2px;
+  }
+  pre {
+    font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 7.8pt;
+    background: #1e2430; color: #e6e6e6; padding: 8px 10px; border-radius: 3px;
+    overflow-x: auto; line-height: 1.35; margin: 7px 0;
+    page-break-inside: avoid;
+  }
+  pre.plain { background: #f7f7f7; color: #222; border: 1px solid #e0e0e0; }
+  .ok { color: #1a7f37; font-weight: 600; }
+  .warn { color: #9a6700; font-weight: 600; }
+  .bad { color: #b3261e; font-weight: 600; }
+  .note {
+    background: #fffbe6; border-left: 3px solid #d4a72c;
+    padding: 7px 10px; margin: 8px 0; font-size: 8.8pt;
+  }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  ul { margin: 5px 0; padding-left: 18px; }
+  li { margin: 2px 0; }
+  a { color: #1a4d8f; }
+  .pb { page-break-before: always; }
+  footer { margin-top: 18px; padding-top: 7px; border-top: 1px solid #ddd; color: #888; font-size: 8pt; }
+  .kv td:first-child { width: 34%; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>Multi-Tenant Configuration &amp; Feature Flag Service</h1>
+<div class="sub">Backend &amp; Platform Take-Home — Option C &nbsp;·&nbsp; Muhammad Usama &nbsp;·&nbsp; July 2026</div>
+
+<div class="lede">
+  <strong>A centralised feature flag service — a small LaunchDarkly.</strong> FastAPI on Cloud Run,
+  Cloud SQL and Memorystore on a private VPC, provisioned entirely with Terraform and deployed by
+  GitHub Actions with a 10% canary and automatic rollback. Nothing was deployed by hand.
+</div>
+
+<table class="kv">
+  <tr><td>Repository</td><td><a href="https://github.com/rana-m-usama/thinking-feature-flag-service">github.com/rana-m-usama/thinking-feature-flag-service</a> (public)</td></tr>
+  <tr><td>Live application</td><td><a href="https://flagsvc-production-wqwagzrz3q-el.a.run.app">https://flagsvc-production-wqwagzrz3q-el.a.run.app</a></td></tr>
+  <tr><td>Interactive API docs</td><td><a href="https://flagsvc-production-wqwagzrz3q-el.a.run.app/docs">/docs</a> &nbsp;·&nbsp; readiness: <a href="https://flagsvc-production-wqwagzrz3q-el.a.run.app/readyz">/readyz</a></td></tr>
+  <tr><td>Service code</td><td><code>/thinking-feature-flag-service</code></td></tr>
+  <tr><td>Infrastructure</td><td><code>/thinking-terraform</code> — 8 modules, 45 resources</td></tr>
+  <tr><td>CI/CD</td><td><a href="https://github.com/rana-m-usama/thinking-feature-flag-service/actions">Actions</a> — <span class="ok">passing</span>, run #29534722144</td></tr>
+  <tr><td>Region / project</td><td><code>asia-south1</code> (Mumbai) / <code>thinking-flagsvc-0e6b</code></td></tr>
+</table>
+
+<h2>1. Architecture</h2>
+
+<pre class="plain">                    Internet
+                       │
+             ┌─────────▼──────────┐
+             │     Cloud Run      │  min=1 max=10, 80 concurrent
+             │  flagsvc-production│  Google-managed TLS on *.run.app
+             └─────────┬──────────┘
+                       │ Direct VPC egress (PRIVATE_RANGES_ONLY — no Cloud NAT needed)
+             ┌─────────▼───────────────────────────────┐
+             │  VPC (global) / subnet (asia-south1)    │
+             │  Private Service Access range 10.18.0.0/16
+             │   ┌──────────────┐    ┌──────────────┐  │
+             │   │  Cloud SQL   │    │ Memorystore  │  │
+             │   │  PostgreSQL  │    │    Redis     │  │
+             │   │  10.18.0.3   │    │ 10.18.49.203 │  │
+             │   │ NO public IP │    │ NO public IP │  │
+             │   └──────────────┘    └──────────────┘  │
+             └─────────────────────────────────────────┘
+
+  Secret Manager ──► DATABASE_URL, ADMIN_API_KEY (mounted as env vars)
+  Artifact Registry ──► images tagged by git SHA
+  GitHub Actions ──► Workload Identity Federation (zero service-account keys)</pre>
+
+<p><strong>On a cache hit the hot path never touches Postgres.</strong> That is what lets a
+<code>db-f1-micro</code> serve the whole service: the database handles flag CRUD and audit
+inserts — a few writes a day — not evaluation traffic.</p>
+
+<h3>Technology choices</h3>
+<table>
+<tr><th>Choice</th><th>Why</th><th>Alternative rejected because</th></tr>
+<tr><td><strong>Cloud Run</strong></td><td>Revision traffic-splitting <em>is</em> the canary requirement, built in. Scales to zero.</td><td><strong>GKE</strong>: ~$75/mo control plane plus node ops, to run one stateless container.</td></tr>
+<tr><td><strong>Direct VPC egress</strong></td><td>No instances to pay for or patch; GA since 2024.</td><td><strong>Serverless VPC connector</strong>: dedicated e2-micro instances, ~$30/mo, same result.</td></tr>
+<tr><td><strong>Cloud SQL</strong> <code>db-f1-micro</code></td><td>Hot path served from Redis; DB does occasional writes.</td><td><strong>AlloyDB</strong>: no shared-core tier, ~$250/mo — a database for a workload that barely has one.</td></tr>
+<tr><td><strong>Memorystore</strong> BASIC</td><td>The cache is rebuildable; every key derives from a query.</td><td><strong>STANDARD_HA</strong>: 2× cost to replicate a component designed to be disposable.</td></tr>
+<tr><td><strong>Private IP only</strong></td><td>No internet path to either datastore — absent from it, not firewalled off it.</td><td><strong>Public IP + authorized networks</strong>: a firewall you can misconfigure.</td></tr>
+</table>
+
+<h2>2. Data model</h2>
+
+<p><strong>The decision everything hangs off: a flag's identity is separate from its
+per-environment state.</strong> <code>flags</code> holds what the flag <em>is</em>;
+<code>flag_environment_configs</code> holds what it is <em>doing</em> in dev vs staging vs
+production. This falls out of the brief directly — <code>POST /flags</code> takes name/type/default
+but no environment, while <code>GET /flags?environment=production</code> filters by one. Collapsing
+them forces you to either duplicate the definition three times (rename it in prod and dev drifts) or
+lose per-environment state entirely.</p>
+
+<pre class="plain">  tenants ──┬── api_keys ──────────────────┐
+            │                              │ (actor)
+            └── flags ──┬── flag_environment_configs   UNIQUE(flag_id, environment)
+                        │      enabled · value · rollout_percentage · targeting_rules
+                        │
+                        └── flag_audit_log  (APPEND-ONLY, trigger-enforced)
+                               action · old_value · new_value · actor_key_id · created_at</pre>
+
+<table>
+<tr><th>Detail</th><th>Reasoning</th></tr>
+<tr><td><strong>Two values, not one</strong></td><td><code>flags.default_value</code> is served when off/archived/outside the rollout; <code>configs.value</code> when on. Two is the structural minimum for the <code>string</code> type to mean anything — a flag with only a default returns it to everyone and the rollout has nothing to select <em>between</em>.</td></tr>
+<tr><td><strong><code>tenant_id</code> denormalised</strong></td><td>On every table, even where reachable via <code>flag_id</code>. Every composite index leads with it. This is the isolation boundary — see §5.</td></tr>
+<tr><td><strong>Configs seeded eagerly</strong></td><td>Creating a flag writes 3 config rows, all <code>enabled=false</code>. Production is dark from the instant a flag exists, and the evaluator has no null branch on its hot path.</td></tr>
+<tr><td><strong>Rules as jsonb</strong></td><td>Evaluation needs every rule for every flag at once — embedding them means one query, one cache entry. Cost: no SQL-level validation, hence API-boundary validation plus a <code>pg_column_size &lt; 8192</code> CHECK to keep the hot path off TOAST.</td></tr>
+<tr><td><strong>No <code>users</code> table</strong></td><td>Deliberate. <code>user_id</code> is opaque and belongs to the tenant's system. Storing it makes us a data processor for every tenant's PII, doesn't scale, and is <em>wrong</em> — if we cached <code>plan:"free"</code> and the caller sends <code>plan:"enterprise"</code>, ours is stale by definition.</td></tr>
+</table>
+
+<h3>The audit log is immutable — enforced by the database, not by discipline</h3>
+<pre>$ psql -c "UPDATE flag_audit_log SET new_value = '{\"tampered\":true}';"
+ERROR:  flag_audit_log is append-only: UPDATE is not permitted
+$ psql -c "DELETE FROM flag_audit_log;"
+ERROR:  flag_audit_log is append-only: DELETE is not permitted</pre>
+<p>Its foreign keys are <code>RESTRICT</code>, not <code>CASCADE</code> — a cascading delete is still
+a DELETE, and allowing it would be a backdoor through immutability: erase the audit trail by deleting
+its tenant.</p>
+
+<div class="pb"></div>
+<h2>3. The evaluation algorithm</h2>
+
+<pre>def bucket_for(flag_key: str, user_id: str) -> int:
+    digest = sha256(f"{flag_key}:{user_id}".encode()).digest()
+    return int.from_bytes(digest[:4], byteorder="big") % 100</pre>
+
+<p>A <strong>pure function of two strings</strong>. No database, no clock, no randomness. Every
+process on every instance computes the same bucket, forever.</p>
+
+<h3>Precedence — the ordering <em>is</em> the design</h3>
+<table>
+<tr><th>#</th><th>Condition</th><th>Returns</th></tr>
+<tr><td>1</td><td>Archived</td><td><code>default_value</code></td></tr>
+<tr><td>2</td><td><code>enabled = false</code></td><td><code>default_value</code> — the kill switch <strong>outranks targeting</strong>: an operator disabling a flag during an incident must not be second-guessed by a rule someone wrote last month.</td></tr>
+<tr><td>3</td><td>First matching targeting rule</td><td>that rule's value — <strong>outranks the rollout</strong>, otherwise a QA user pinned to <code>true</code> sits at their hash bucket and tests a coin flip.</td></tr>
+<tr><td>4</td><td><code>bucket &gt;= rollout_percentage</code></td><td><code>default_value</code></td></tr>
+<tr><td>5</td><td>otherwise</td><td><code>value</code></td></tr>
+</table>
+
+<h3>Verified against the live GCP service</h3>
+<p>Predicted buckets: <code>qa-bot</code>=17, <code>user_2c91</code>=67, <code>user_8f3a</code>=82.</p>
+<pre>rollout   qa-bot(17)  user_2c91(67)  user_8f3a(82)
+  10%       false        false          false
+  25%       true         false          false      &lt;- 17 enters
+  50%       true         false          false
+  70%       true         true           false      &lt;- 67 enters
+ 100%       true         true           true       &lt;- 82 enters
+── rollback to 25% ──
+  25%       true         false          false      &lt;- exactly the cohort that was added</pre>
+
+<p><strong>Widening a rollout is purely additive.</strong> <code>user_2c91</code> is at bucket 67
+whether the rollout is 10% or 70% — raising the percentage only ever <em>adds</em> people. Nobody
+loses a feature mid-session, which is the property that makes gradual rollout usable at all. With
+<code>random()</code>, a customer would build a cart in the new flow and pay in the old one.</p>
+
+<p><strong>Why <code>flag_key</code> is in the hash.</strong> <code>user_2c91</code> sits at bucket
+<strong>67</strong> for checkout but <strong>6</strong> for search — same user, opposite fates.
+Hashing <code>user_id</code> alone would put the same unlucky cohort in the first 10% of
+<em>every</em> rollout: permanent guinea pigs, and every experiment confounded by every other.</p>
+
+<div class="grid">
+<div>
+<h3>Uniformity (100k synthetic users)</h3>
+<pre>buckets 0-9 (a 10% rollout):
+  10,007 users → 10.01%
+smallest bucket: 921
+largest bucket: 1,055  (expect ~1,000)</pre>
+</div>
+<div>
+<h3>Live string flag @50% (120 real users)</h3>
+<pre>61 control
+59 treatment
+
+user_7 × 8 calls → control (1 distinct)</pre>
+</div>
+</div>
+
+<div class="note">
+<strong>Cross-language reproducibility.</strong> An independent Node implementation produces
+byte-identical buckets (17/75, 67/6, 82/41). SHA-256 + big-endian uint32 + mod 100 is unambiguous in
+every language — which is what would make client-side SDK evaluation viable. A language-native
+<code>hashCode()</code> would not be.<br><br>
+<strong>Modulo bias</strong> is present and ignored deliberately: <code>2**32 % 100 == 96</code>, so
+buckets 0–95 are ~0.000002% more likely than 96–99. Correcting it costs more code than the error
+costs anyone. <strong>The <code>:</code> separator is load-bearing</strong> — without it
+<code>("ab","c")</code> and <code>("a","bc")</code> collide and one flag serves another's cohort.
+</div>
+
+<h2>4. Deployment and rollback</h2>
+
+<pre class="plain">push to main (thinking-feature-flag-service/** only — terraform excluded)
+   ↓
+lint + 58 tests            ← real Postgres + Redis service containers
+   ↓
+build → push :$GIT_SHA → run migrate job (must succeed)
+   ↓
+deploy --no-traffic --tag=candidate    ← boots, serves nobody
+   ↓
+smoke test candidate /readyz           ← proves it reaches Cloud SQL through the VPC
+   ↓
+10% canary → watch → 100%
+   ↓
+ANY failure → traffic back to the previous revision (health-checked first)</pre>
+
+<p><strong>Canary, not blue-green — and there is a neat reason it is safe here.</strong> Cloud Run
+splits traffic <em>per request, not sticky</em>: the same user can hit the old revision then the new
+one. For most services that is a problem. Here it is fine, because evaluation is a pure function of
+<code>(flag_key, user_id)</code> — both revisions compute bucket 67 for <code>user_2c91</code> and
+return the same answer. <strong>The determinism that makes rollouts work is what makes non-sticky
+canary deploys safe.</strong></p>
+
+<table>
+<tr><th>Decision</th><th>Reasoning</th></tr>
+<tr><td><strong>Terraform owns the <em>shape</em>; CI owns the <em>image</em> and traffic split</strong></td><td><code>lifecycle { ignore_changes = [image, traffic] }</code>. Without it, every <code>terraform apply</code> reverts whatever CI deployed — an unplanned rollback triggered by an unrelated infra change — and an apply mid-canary would slam 100% of traffic onto the candidate, completing a rollout nobody approved.</td></tr>
+<tr><td><strong>Migrations as a Cloud Run Job</strong></td><td>Before traffic shifts, never at container start where N autoscaled instances would race the same schema. <em>Consequence:</em> during a canary old and new revisions share one schema, so <strong>every migration must be backward-compatible</strong>. Add a column, deploy, backfill, drop later — never rename in one step.</td></tr>
+<tr><td><strong>Keyless CI auth</strong></td><td>Workload Identity Federation, pinned by <code>attribute_condition</code> to this exact repository. No service-account JSON key exists anywhere — the most commonly leaked GCP credential, because it never expires and works from anywhere.</td></tr>
+<tr><td><strong>Rollback = traffic shift</strong></td><td>Seconds, no rebuild, because the previous revision was never deleted. That is the whole reason for revision-splitting over a rolling update. CI health-checks the target first: "previous revision" does not mean "known good".</td></tr>
+</table>
+
+<h2>5. Testing</h2>
+
+<p><strong>58 tests, run in CI on every push.</strong> 40 unit (evaluation engine) + 18 integration
+(isolation, environment scoping, cache separation, auth). The weight is on the engine because a bug
+there serves the wrong feature to real users <em>silently</em>, whereas a bug in the CRUD layer
+returns a 500 someone notices.</p>
+
+<table>
+<tr><th>Test</th><th>Why it exists</th></tr>
+<tr><td>Determinism — 1,000 calls, one result</td><td>The property the product rests on.</td></tr>
+<tr><td>Exact bucket constants pinned</td><td>A deliberate change-detector. Swap the hash or drop the <code>:</code> and every live rollout silently reshuffles — users lose features mid-session. Must fail in CI, not production.</td></tr>
+<tr><td>Uniformity ±1% over 20k users</td><td>A non-uniform hash is perfectly deterministic and passes every other test while making "10%" mean 3%.</td></tr>
+<tr><td>Monotonicity</td><td>Everyone in the cohort at 25% is still in it at 70%.</td></tr>
+<tr><td>Falsy values (<code>0</code>, <code>""</code>)</td><td>Legitimate flag values, not "no value". A truthiness check anywhere in the engine would serve the default and be nearly invisible.</td></tr>
+</table>
+
+<h3>The isolation result worth reading</h3>
+<p>The authorisation guard was <strong>deliberately deleted</strong> and an attacker holding a valid
+key asked for a victim's flags:</p>
+<pre>GET victim's flags with attacker key -> HTTP 200
+   response body: []
+   victim's real flags: ["victim.secret_flag"]
+
+PUT victim's flag with attacker key  -> HTTP 404
+   victim's flag still: enabled=false</pre>
+<p><strong>With authorisation entirely removed, no data leaked.</strong> The redundant
+<code>tenant_id</code> filter in the repository layer — filtering on the authenticated key's tenant,
+never the URL — held the line alone. Damage was limited to wrong status codes.</p>
+
+<h3>Live isolation, verified against GCP</h3>
+<table>
+<tr><th>Attack (attacker holds a <em>valid</em> key)</th><th>Result</th></tr>
+<tr><td>GET / PUT / DELETE / history on another tenant</td><td class="ok">404 — not 403, which would confirm the tenant exists</td></tr>
+<tr><td>Spoofed <code>tenant_id</code> in evaluate body</td><td class="ok">403 — the key is the authority, never the payload</td></tr>
+<tr><td>No key / forged key</td><td class="ok">401 — not 422; a missing credential is an auth failure</td></tr>
+</table>
+
+<h2>6. Observability &amp; live performance</h2>
+
+<div class="grid">
+<div>
+<h3>Measured on the deployed service</h3>
+<pre>evaluation_latency_ms:
+  p50: 0.787   p95: 2.233   p99: 6.872
+  samples: 451
+
+cache: 430 hits / 21 misses
+       ratio: 95.3%</pre>
+</div>
+<div>
+<h3>Alerts</h3>
+<table>
+<tr><td>5xx error rate</td><td>&gt;5% / 5min</td></tr>
+<tr><td>Evaluation p95</td><td>&gt;500ms / 5min</td></tr>
+<tr><td>Uptime check</td><td>≥2 probe regions failing</td></tr>
+</table>
+</div>
+</div>
+
+<p><strong>Metrics derive from the structured logs, not a client library.</strong> On an autoscaled,
+scale-to-zero service an in-process counter is per-instance and per-lifetime: honest for one
+container, wrong in aggregate. The p99 you want is across the fleet, not inside a process that
+started 40 seconds ago.</p>
+
+<div class="note">
+<strong>Route templates, never resolved paths.</strong> <code>/api/v1/tenants/{tenant_id}/flags</code>,
+not <code>/api/v1/tenants/83fc.../flags</code>. Resolved paths embed UUIDs, so every new tenant mints
+a new time series forever — the monitoring bill grows with the customer list and the alert never
+fires because no series has enough volume. This was a real bug, caught by reading the metrics output.
+<br><br>
+<strong>The error-rate alert counts 5xx only, not 4xx.</strong> A tenant sending a bad API key
+produces 401s all day and that is the service <em>working</em>. The brief says "error rate" without
+saying whose errors; this reads it as ours.
+</div>
+
+<div class="pb"></div>
+<h2>7. Assumptions</h2>
+<table>
+<tr><th>Assumption</th><th>Why it was necessary</th></tr>
+<tr><td><code>ADMIN_API_KEY</code> for tenant registration</td><td><code>POST /tenants</code> cannot authenticate with a tenant key — at that moment neither the tenant nor its key exists. The endpoint is unimplementable without a separate operator credential. The brief does not describe how tenant creation is authorised.</td></tr>
+<tr><td><code>/evaluate</code> vs <code>/evaluate/bulk</code></td><td>The brief gives both the same request body and does not say how they differ. <code>/evaluate</code> takes an optional <code>flag_keys</code> to scope; omit it and they are equivalent.</td></tr>
+<tr><td><code>environment</code> in the PUT body</td><td>The brief's PUT mixes flag-level operations ("modify default value") with environment-level ones ("toggle on/off"), but its URL carries no environment.</td></tr>
+<tr><td>Actors are API keys, not humans</td><td>The only auth mechanism in the brief is API keys — no login, no accounts, no RBAC. Real human attribution needs an identity layer not asked for.</td></tr>
+<tr><td>Unknown <code>flag_keys</code> return <code>{}</code></td><td>An SDK asking for a nonexistent flag falls back to its own default rather than getting a 500.</td></tr>
+</table>
+
+<h2>8. Trade-offs and known gaps</h2>
+<table>
+<tr><th>Item</th><th>Position</th></tr>
+<tr><td class="bad">Load test (k6) — <strong>not done</strong></td><td>The one requirement not met, and the single biggest gap. Everything is verified sequentially, so the connection pool under parallel load, the rate limiter, and cache stampedes on a cold key are unexercised. That is where I would expect the next real bug.</td></tr>
+<tr><td>SSE / WebSocket — not done</td><td>Explicitly a bonus. It would also change the Cloud Run config: <code>cpu_idle = true</code> means an idle SSE connection cannot push.</td></tr>
+<tr><td>No <code>reason</code> on the evaluate response</td><td>The engine computes one and logs it, but the brief asks only for values. It is the most useful debugging field a flag service can expose and would be my first addition.</td></tr>
+<tr><td>Fixed-window rate limiting</td><td>Allows a 2× burst across a minute boundary. A sliding-log window fixes it at the cost of a sorted set per tenant. Harmless at these limits.</td></tr>
+<tr><td>Connection math is deliberately tight</td><td><code>db-f1-micro</code> allows ~25 connections; the pool is <em>per container</em>, so <code>10 × (2+1) = 30</code>. Over 25 on purpose — reaching it needs all 10 instances saturated <em>and</em> holding full overflow, which for an async app whose hot path never touches the DB means a genuine incident. The fix is <code>db-g1-small</code>, not a smaller pool, which would move the failure inside each container.</td></tr>
+<tr><td>Staging written, not applied</td><td>Own tfvars, own backend, own state prefix. Memorystore's 1GB BASIC (~$35/mo) is the smallest SKU that exists, so two environments over the 90-day window is ~$320 against a $300 grant. <code>make plan ENV=staging</code> works; the spend is a documented decision.</td></tr>
+<tr><td>Load balancer written, disabled</td><td>Google-managed certs validate by DNS against a domain you own. Without one an LB serves only plain HTTP — <em>strictly worse</em> than the free TLS already on the <code>run.app</code> URL. Set <code>domain</code> and the LB, Cloud Armor and ingress-lockdown appear (+$18/mo).</td></tr>
+<tr><td>No AWS-SCP equivalent</td><td>GCP Organization Policies require a GCP Organization, which a personal account does not have. What we get: <code>deletion_protection</code> on Cloud SQL (API-enforced) and <code>prevent_destroy</code> on the state bucket.</td></tr>
+</table>
+
+<h2>9. Cost — production, ~$63/month</h2>
+<table>
+<tr><td>Cloud SQL <code>db-f1-micro</code> ZONAL</td><td>~$9</td></tr>
+<tr><td><strong>Memorystore BASIC 1GB</strong></td><td><strong>~$35</strong> — the floor; no free tier, no smaller SKU</td></tr>
+<tr><td>Cloud Run (min=1)</td><td>~$5</td></tr>
+<tr><td>Registry, secrets, monitoring</td><td>~$3</td></tr>
+</table>
+<p>A budget alert fires at 50/90/100% of $300, plus a forecast-based one that lands days earlier.
+GCP has no hard spend cap — it is a smoke detector, not a sprinkler.</p>
+
+<div class="note">
+<strong>Two implicit defaults that would have been expensive, caught at apply time:</strong><br>
+<strong>1.</strong> Cloud SQL defaults newer Postgres versions to <code>ENTERPRISE_PLUS</code>, which
+rejects every shared-core tier and demands <code>db-perf-optimized-*</code> — roughly
+<strong>$300+/month</strong>, the entire credit in one month. The edition is now pinned explicitly.
+Had the tier happened to be compatible it would have silently created a 30× more expensive instance,
+and the first symptom would have been a billing alert.<br>
+<strong>2.</strong> The PSA range must be a <code>/16</code>, not a <code>/24</code>. Each service
+provider carves an entire <em>subnet</em> out of it: Memorystore takes a <code>/29</code>, but Cloud
+SQL demands a full <code>/24</code> for itself. Inside a <code>/24</code> total, Memorystore's
+<code>/29</code> leaves ~248 free addresses and <em>still</em> no room — failing with the thoroughly
+misleading "Couldn't find free blocks in allocated IP ranges". Reason about subnet blocks, not
+address counts.
+</div>
+
+<h2>10. Engineering notes</h2>
+<p>A few findings that only surfaced by running the thing, and which are documented in the code
+rather than smoothed over:</p>
+<ul>
+<li><strong><code>/healthz</code> is intercepted by Cloud Run's frontend</strong> and never reaches
+the container — it returns Google's own HTML 404. The proof: <code>/healthzz</code>, a path the app
+does not define, reaches FastAPI and returns its JSON 404. The canary probed <code>/healthz</code>,
+could never get a 200, and rolled back every deploy while the candidate was provably healthy. The
+safety mechanism <em>was</em> the outage. Locally it works perfectly, which is what made it invisible.
+Renamed to <code>/livez</code>.</li>
+<li><strong>Alembic passes the DB URL through ConfigParser</strong>, where <code>%</code> is
+interpolation syntax — so any URL-encoded password (<code>%2B</code>, <code>%23</code>) is rejected by
+the config layer before reaching the database. Compounded by a comment claiming <code>#</code> was
+excluded from the password charset when it was not. A comment describing a constraint the code does
+not enforce is worse than no comment: it is a claim reviewers trust. The constraint now lives in the
+value (RFC 3986 unreserved only).</li>
+<li><strong>A rollback that made things worse.</strong> The canary watched the <em>service</em> URL,
+which honours the traffic split — so 90% of probes hit the old revision. It now watches the
+candidate's tagged URL and health-checks the rollback target before trusting it. "Previous revision"
+does not mean "known good".</li>
+<li><strong>The audit log recorded no-op changes.</strong> An idempotent <code>PUT</code> wrote
+<code>old={"rollout_percentage":25} new={"rollout_percentage":25}</code> — a log whose only job is
+answering "what changed" asserting a change that did not happen. Now only differing fields are
+recorded.</li>
+</ul>
+
+<footer>
+Muhammad Usama &nbsp;·&nbsp; Backend &amp; Platform Take-Home, Option C &nbsp;·&nbsp;
+github.com/rana-m-usama/thinking-feature-flag-service &nbsp;·&nbsp;
+Live: flagsvc-production-wqwagzrz3q-el.a.run.app
+</footer>
+
+</body>
+</html>

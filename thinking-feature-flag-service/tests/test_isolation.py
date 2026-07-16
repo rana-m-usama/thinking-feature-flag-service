@@ -71,9 +71,7 @@ class TestTenantIsolation:
         check = await client.get(
             f"/api/v1/tenants/{alpha['id']}/flags", headers={"X-API-Key": alpha["key"]}
         )
-        production = next(
-            c for c in check.json()[0]["configs"] if c["environment"] == "production"
-        )
+        production = next(c for c in check.json()[0]["configs"] if c["environment"] == "production")
         assert production["enabled"] is False
 
     async def test_cannot_archive_another_tenants_flag(self, client, two_tenants):
@@ -231,7 +229,7 @@ class TestAuthentication:
         assert response.status_code == 401
 
     async def test_api_key_is_never_stored_in_plaintext(self, client, tenant_factory):
-        """"keys stored hashed, not in plain text"."""
+        """ "keys stored hashed, not in plain text"."""
         from sqlalchemy import select
 
         from app.db import SessionLocal

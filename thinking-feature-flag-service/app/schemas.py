@@ -16,6 +16,20 @@ from app.models import AuditAction, Environment, FlagType
 
 Operator = Literal["in", "not_in", "eq", "neq", "contains", "starts_with", "ends_with"]
 
+# The JSON types a flag value may take — one per FlagType.
+#
+# Typed as a union rather than `Any` because `Any` produces an OpenAPI schema with NO
+# type at all, and Swagger then renders the placeholder "string" for every value field.
+# The generated docs therefore showed `{"type": "boolean", "default_value": "string"}` —
+# an example that this API rejects with a 422. Documentation that contradicts the
+# validator is worse than none: a reader trusts it and gets a 422 they cannot explain.
+#
+# Pydantic's smart-union mode preserves the input type exactly (True stays bool, 100
+# stays int, "true" stays str), so this narrows the schema WITHOUT coercing anything —
+# which matters, because a union that turned True into 1.0 would silently defeat
+# `_value_matches_type` and let a boolean flag serve a number.
+FlagValue = bool | int | float | str
+
 
 class TargetingRule(BaseModel):
     """A single targeting rule.
@@ -42,8 +56,8 @@ class TargetingRule(BaseModel):
         "request's user_id rather than a context entry."
     )
     operator: Operator
-    values: list[Any] = Field(description="Operands. `eq`/`neq` use the first element.")
-    value: Any = Field(description="Value served when this rule matches.")
+    values: list[FlagValue] = Field(description="Operands. `eq`/`neq` use the first element.")
+    value: FlagValue = Field(description="Value served when this rule matches.")
 
 
 # --- Tenants -------------------------------------------------------------------
@@ -100,9 +114,9 @@ class FlagCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
     type: FlagType
-    default_value: Any = Field(
+    default_value: FlagValue = Field(
         description="Served when the flag is off, archived, or the user is outside the "
-        "rollout. The only 'off' value in the system."
+        "rollout. The only 'off' value in the system. Must match `type`."
     )
 
     @model_validator(mode="after")
@@ -139,12 +153,12 @@ class FlagUpdate(BaseModel):
     # Flag-level
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
-    default_value: Any = None
+    default_value: FlagValue | None = None
 
     # Environment-level
     environment: Environment | None = None
     enabled: bool | None = None
-    value: Any = None
+    value: FlagValue | None = None
     rollout_percentage: int | None = Field(default=None, ge=0, le=100)
     targeting_rules: list[TargetingRule] | None = None
 
@@ -166,7 +180,7 @@ class FlagConfigResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     environment: Environment
     enabled: bool
-    value: Any
+    value: FlagValue
     rollout_percentage: int
     targeting_rules: list[dict]
     updated_at: datetime
@@ -179,7 +193,7 @@ class FlagResponse(BaseModel):
     name: str
     description: str | None
     type: FlagType
-    default_value: Any
+    default_value: FlagValue
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -271,7 +285,7 @@ class EvaluateResponse(BaseModel):
 
     user_id: str
     environment: Environment
-    flags: dict[str, Any] = Field(description="flag_key -> evaluated value")
+    flags: dict[str, FlagValue] = Field(description="flag_key -> evaluated value")
 
 
 # --- Shared --------------------------------------------------------------------

@@ -9,6 +9,43 @@ Built for the Backend & Platform take-home (Option C). Two deliverables, two fol
 
 ---
 
+## Live on GCP
+
+| | |
+|---|---|
+| **Deployed application** | **https://flagsvc-production-wqwagzrz3q-el.a.run.app** |
+| **Interactive API docs** | **https://flagsvc-production-wqwagzrz3q-el.a.run.app/docs** |
+| Readiness — proves the private path to Cloud SQL and Memorystore | [`/readyz`](https://flagsvc-production-wqwagzrz3q-el.a.run.app/readyz) |
+| Metrics | [`/metrics`](https://flagsvc-production-wqwagzrz3q-el.a.run.app/metrics) |
+
+```console
+$ curl https://flagsvc-production-wqwagzrz3q-el.a.run.app/readyz
+{"status":"ready","checks":{"database":"ok","cache":"ok"}}
+```
+
+Region `asia-south1`, project `thinking-flagsvc-0e6b`. Deployed entirely by GitHub Actions
+with keyless auth — build → migrate → canary at 10% → 100%, rolling back automatically on
+failure. Nothing was deployed by hand.
+
+<details>
+<summary><b>Candidate URL</b> — for watching a deploy, not for testing against</summary>
+
+**https://candidate---flagsvc-production-wqwagzrz3q-el.a.run.app/docs**
+
+CI deploys every revision with `--tag=candidate` and no traffic, which gives it a URL of its
+own before a single user reaches it. That is what the smoke test probes.
+
+**It is a deploy-time artifact, not a stable address.** It points at whatever the most recent
+CI run built — which is not necessarily what production is serving. Right now both URLs
+happen to resolve to the same revision, so both work. During a canary they do not: the
+candidate URL serves the *new* code while production is still 90% on the old one, so a
+reviewer hitting it could see a version that isn't live.
+
+Use the stable URL above for anything real.
+</details>
+
+---
+
 ## What this repository contains
 
 | Folder | What it is | Read it for… |

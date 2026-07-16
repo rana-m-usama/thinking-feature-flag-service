@@ -169,10 +169,12 @@ resource "google_cloud_run_v2_service" "main" {
         name  = "GCP_PROJECT_ID"
         value = var.project_id
       }
-      env {
-        name  = "PORT"
-        value = "8080"
-      }
+      # No PORT env var here on purpose.
+      #
+      # Cloud Run injects PORT itself and REJECTS any attempt to set it — a hard 400 at
+      # create time, not a warning. The container must read it from the environment,
+      # which app/config.py already does (defaulting to 8080 for local/compose where
+      # nothing injects it). Setting it here to "document" the port cost an apply.
       env {
         name  = "REDIS_URL"
         value = var.redis_url

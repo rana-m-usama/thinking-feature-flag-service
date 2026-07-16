@@ -105,6 +105,18 @@ module "service" {
   db_max_overflow       = var.db_max_overflow
 
   enable_load_balancer = local.enable_load_balancer
+
+  # Depend on the whole database and secrets modules, not just the secret IDs.
+  #
+  # Cloud Run resolves `secret_key_ref { version = "latest" }` AT CREATE TIME and fails
+  # if no version exists yet. The service only references the secret's *id*, so Terraform
+  # considered the dependency met as soon as the empty secret existed — and raced ahead
+  # to create the job before `google_secret_manager_secret_version.database_url` was
+  # written. That version cannot be written until Cloud SQL has a private IP, so the gap
+  # is minutes wide, not milliseconds.
+  #
+  # "Secret ... versions/latest was not found" is what that race looks like.
+  depends_on = [module.database, module.secrets]
 }
 
 # --- Load balancer (conditional) ----------------------------------------------------

@@ -22,6 +22,21 @@ variable "tier" {
   default     = "db-f1-micro"
 }
 
+variable "edition" {
+  description = <<-EOT
+    ENTERPRISE or ENTERPRISE_PLUS. Must be explicit — the API default varies by Postgres
+    version and ENTERPRISE_PLUS rejects every shared-core tier, forcing db-perf-optimized-*
+    at ~$300+/month. ENTERPRISE is the only edition where db-f1-micro exists.
+  EOT
+  type        = string
+  default     = "ENTERPRISE"
+
+  validation {
+    condition     = contains(["ENTERPRISE", "ENTERPRISE_PLUS"], var.edition)
+    error_message = "Must be ENTERPRISE or ENTERPRISE_PLUS."
+  }
+}
+
 variable "availability_type" {
   description = "ZONAL or REGIONAL. REGIONAL doubles cost for a synchronous standby."
   type        = string

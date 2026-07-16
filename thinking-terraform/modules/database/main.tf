@@ -26,7 +26,21 @@ resource "google_sql_database_instance" "main" {
   deletion_protection = var.deletion_protection
 
   settings {
-    tier = var.tier
+    # Pin the edition. NEVER leave this implicit.
+    #
+    # Cloud SQL defaults newer Postgres versions to ENTERPRISE_PLUS, which refuses every
+    # shared-core tier and demands db-perf-optimized-N-* instead — roughly $300+/month,
+    # i.e. the entire free-tier credit in one month, for a database whose hot path is
+    # served from Redis and which handles a few flag writes a day.
+    #
+    # We found this because the apply failed loudly: "Invalid Tier (db-f1-micro) for
+    # (ENTERPRISE_PLUS) Edition". Had the tier happened to be compatible, it would have
+    # silently created a 30x more expensive instance and the first symptom would have
+    # been a billing alert.
+    #
+    # ENTERPRISE is the edition that supports db-f1-micro/db-g1-small.
+    edition = var.edition
+    tier    = var.tier
 
     # ZONAL, not REGIONAL. Regional HA doubles the cost for a synchronous standby in a
     # second zone. For a service whose reads are served from Redis and whose writes are

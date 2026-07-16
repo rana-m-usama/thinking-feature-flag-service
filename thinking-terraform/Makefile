@@ -61,9 +61,15 @@ plan: check-env
 
 # Applies the saved plan rather than re-planning. Re-planning at apply time means you
 # approve one set of changes and apply whatever the world looks like seconds later.
+# Check for the plan file FIRST, then let terraform's own error surface untouched.
+# The previous version wrapped apply in `|| (echo "No saved plan?"; exit 1)`, so ANY
+# failure — a real API error mid-apply — was reported as a missing plan file. It cost an
+# apply to notice. A fallback message must never be able to describe a failure it did not
+# diagnose.
 apply: check-env
-	cd $(LIVE) && terraform apply $(ENV).tfplan || \
-		(echo ""; echo "No saved plan? Run: make plan ENV=$(ENV)"; exit 1)
+	@test -f $(LIVE)/$(ENV).tfplan || \
+		(echo "No saved plan for $(ENV). Run: make plan ENV=$(ENV)"; exit 1)
+	cd $(LIVE) && terraform apply $(ENV).tfplan
 
 # Destroy order is not cosmetic. The PSA peering cannot be torn down while Cloud SQL or
 # Memorystore still hold IPs allocated from it — Terraform gets the ordering wrong often

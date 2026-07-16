@@ -155,24 +155,34 @@ resource "google_monitoring_alert_policy" "error_rate" {
   conditions {
     display_name = "5xx ratio > 5% over 5m"
 
-    condition_monitoring_query_language {
-      duration = "300s"
-      query    = <<-EOT
-        fetch cloud_run_revision
-        | { errors:
-              metric 'logging.googleapis.com/user/${google_logging_metric.request_errors.name}'
-              | align delta(5m)
-              | every 1m
-              | group_by [], [value_errors: sum(value.request_errors)]
-          ; total:
-              metric 'logging.googleapis.com/user/${google_logging_metric.request_total.name}'
-              | align delta(5m)
-              | every 1m
-              | group_by [], [value_total: sum(value.request_total)]
-          }
-        | join
-        | value [ratio: val(0) / val(1)]
-        | condition ratio > 0.05
+    # PromQL against Cloud Run's BUILT-IN request_count, not our log-based metrics.
+    #
+    # Two reasons, learned the hard way at apply time:
+    #
+    # 1. An error *ratio* needs errors and totals together. With log-based metrics that
+    #    means two series and a join, which MQL expresses awkwardly and which Terraform
+    #    cannot validate — `terraform validate` passes on any string here, so a wrong
+    #    column name ("Cannot find column or metadata name 'value.request_errors'") only
+    #    surfaces mid-apply. MQL is also deprecated in favour of PromQL.
+    #
+    # 2. run.googleapis.com/request_count already carries a `response_code_class` label,
+    #    so the numerator and denominator are the same metric with different selectors.
+    #    No join, no custom metric, nothing to typo.
+    #
+    # The per-tenant error breakdown the spec asks for is still built from our log-based
+    # metrics — it lives on the dashboard, where the tenant_id label is the point. This
+    # alert only needs "is the service broken", which is not a per-tenant question.
+    #
+    # No traffic means the denominator is 0 and the ratio is NaN; NaN > 0.05 is false, so
+    # an idle service does not page anyone.
+    condition_prometheus_query_language {
+      duration            = "300s"
+      evaluation_interval = "60s"
+      query               = <<-EOT
+        sum(rate(run_googleapis_com:request_count{monitored_resource="cloud_run_revision",service_name="${var.service_name}",response_code_class="5xx"}[5m]))
+        /
+        sum(rate(run_googleapis_com:request_count{monitored_resource="cloud_run_revision",service_name="${var.service_name}"}[5m]))
+        > 0.05
       EOT
     }
   }

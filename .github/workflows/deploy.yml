@@ -1,0 +1,282 @@
+name: Deploy service
+
+# Fires only on changes to the SERVICE. thinking-terraform/** is deliberately absent
+# from the paths filter, so infrastructure changes never trigger an application deploy.
+#
+# That separation is the point, not a convenience. Terraform owns the shape of the Cloud
+# Run service; this pipeline owns the image running inside it and how traffic reaches it.
+# If a terraform edit triggered this workflow, an infrastructure change would silently
+# redeploy the application — and the reverse (this workflow running terraform) would let
+# an app deploy mutate a database. They are separate blast radii and stay separate.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "thinking-feature-flag-service/**"
+      - ".github/workflows/deploy.yml"
+  # Manual trigger for redeploying an unchanged commit — e.g. after a rollback, when the
+  # code is identical but the traffic split is not where you want it.
+  workflow_dispatch:
+
+# Never deploy two revisions concurrently. Without this, two quick merges race: both
+# build, both run migrations against the same database, and traffic ends up wherever the
+# slower one finished. cancel-in-progress is FALSE on purpose — cancelling a deploy
+# mid-traffic-shift would strand production at 10% on a candidate nobody is watching.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: thinking-flagsvc-0e6b
+  REGION: asia-south1
+  SERVICE: flagsvc-production
+  MIGRATE_JOB: flagsvc-production-migrate
+  REGISTRY: asia-south1-docker.pkg.dev/thinking-flagsvc-0e6b/flagsvc-production
+  # These two are NOT secrets and are intentionally in plain sight. The WIF provider path
+  # and the service account email are both public identifiers; the security boundary is
+  # the provider's attribute_condition, which pins this exact repository. A leaked
+  # provider path gets an attacker nothing, because their repo cannot satisfy the
+  # condition. Storing them as secrets would imply a protection they do not provide.
+  WIF_PROVIDER: projects/440923660821/locations/global/workloadIdentityPools/flagsvc-production-gh-pool/providers/github-provider
+  WIF_SERVICE_ACCOUNT: flagsvc-production-deployer@thinking-flagsvc-0e6b.iam.gserviceaccount.com
+
+defaults:
+  run:
+    working-directory: thinking-feature-flag-service
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+
+    # Real Postgres and real Redis, not fakes. The integration suite exists to catch
+    # tenant isolation leaks, the append-only audit trigger, and cache key separation —
+    # every one of which is a database behaviour that a mocked session would happily let
+    # pass while the real query returned another tenant's rows.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: flagsvc
+          POSTGRES_PASSWORD: flagsvc
+          POSTGRES_DB: flagsvc
+        ports:
+          - 5432:5432
+        # Without a health check the job races Postgres' first-boot init and the first
+        # test connects to a server that exists but has no database yet.
+        options: >-
+          --health-cmd "pg_isready -U flagsvc -d flagsvc"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # Standard ports here. Locally these are 5433/6380 to dodge a native Postgres and
+      # Redis on the developer's machine; a runner has neither. conftest.py parses the
+      # host and port out of these rather than assuming.
+      DATABASE_URL: postgresql+asyncpg://flagsvc:flagsvc@localhost:5432/flagsvc_test
+      REDIS_URL: redis://localhost:6379/15
+      ADMIN_API_KEY: ci-admin-key-not-a-real-secret
+      APP_ENV: local
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv venv --python 3.12 && uv pip install -e ".[dev]"
+
+      - name: Lint
+        run: |
+          .venv/bin/ruff check app/ tests/
+          .venv/bin/ruff format --check app/ tests/
+
+      - name: Test
+        # 58 tests: 40 unit for the evaluation engine (determinism, uniformity,
+        # monotonicity, precedence) and 18 integration (tenant isolation, environment
+        # scoping, cache separation). The unit suite pins exact hash buckets on purpose —
+        # if someone changes the hash, every live rollout silently reshuffles and users
+        # lose features mid-session. That must fail here, not in production.
+        run: .venv/bin/python -m pytest -q
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Build, migrate, canary
+    needs: test
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # Required for Workload Identity Federation. This is what lets GitHub mint the OIDC
+      # token GCP exchanges for an access token — no service account JSON key exists
+      # anywhere in this repo or its secrets. A SA key is the most commonly leaked GCP
+      # credential precisely because it never expires and works from anywhere.
+      id-token: write
+
+    outputs:
+      candidate: ${{ steps.deploy_candidate.outputs.revision }}
+      previous: ${{ steps.snapshot.outputs.revision }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP (keyless)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Record the currently-serving revision
+        id: snapshot
+        # Captured BEFORE anything changes. This is the rollback target, and it has to be
+        # read now — once traffic has shifted, "the previous revision" is ambiguous.
+        run: |
+          PREV=$(gcloud run services describe "$SERVICE" --region="$REGION" \
+                   --format='value(status.traffic[0].revisionName)' 2>/dev/null || echo "")
+          echo "revision=$PREV" >> "$GITHUB_OUTPUT"
+          echo "Rollback target: ${PREV:-<none — first deploy>}"
+
+      - name: Docker auth
+        run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+
+      - name: Build and push
+        # Tagged with the git SHA, never :latest alone. A rollback needs to name an exact
+        # image, and ":latest" names whatever was pushed most recently — which during an
+        # incident is precisely the thing you are trying to get away from.
+        run: |
+          IMAGE="$REGISTRY:${GITHUB_SHA::7}"
+          docker build -t "$IMAGE" -t "$REGISTRY:latest" .
+          docker push "$IMAGE"
+          docker push "$REGISTRY:latest"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Run migrations
+        # Before any traffic shifts, and the deploy fails if this fails.
+        #
+        # Migrations run as a Cloud Run JOB rather than at container start, because Cloud
+        # Run scales past one instance and N containers racing `alembic upgrade head`
+        # against one database is how a schema gets corrupted. The job also runs inside
+        # the VPC, which is the only way to reach a database that has no public IP.
+        #
+        # CONSEQUENCE, and it is a real constraint on how you write migrations: during the
+        # canary below, the old and new revisions serve traffic against the SAME schema.
+        # Every migration must therefore be backward-compatible with the currently-running
+        # code. Add a column, deploy, backfill, drop in a LATER release — never rename in
+        # one step.
+        run: |
+          gcloud run jobs update "$MIGRATE_JOB" --region="$REGION" --image="$IMAGE" --quiet
+          gcloud run jobs execute "$MIGRATE_JOB" --region="$REGION" --wait
+
+      - name: Deploy candidate with no traffic
+        id: deploy_candidate
+        # --no-traffic is what makes this safe: the revision boots, connects to Postgres
+        # and Redis, and is reachable on its own tagged URL while production carries on
+        # untouched. A broken revision is caught here, having served nobody.
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --region="$REGION" \
+            --image="$IMAGE" \
+            --no-traffic \
+            --tag=candidate \
+            --quiet
+          REV=$(gcloud run services describe "$SERVICE" --region="$REGION" \
+                  --format='value(status.latestCreatedRevisionName)')
+          echo "revision=$REV" >> "$GITHUB_OUTPUT"
+          echo "Candidate: $REV"
+
+      - name: Smoke test the candidate
+        # Against the candidate's OWN url, which serves 0% of production traffic.
+        # /readyz, not /healthz: readiness actually probes Postgres, so this proves the
+        # revision can reach the database through the VPC. /healthz only proves the
+        # process is alive, which a container with a broken DATABASE_URL also manages.
+        run: |
+          URL=$(gcloud run services describe "$SERVICE" --region="$REGION" --format=json \
+                  | jq -r '.status.traffic[] | select(.tag=="candidate") | .url')
+          echo "Probing $URL"
+          for i in $(seq 1 20); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/readyz" || echo 000)
+            [ "$CODE" = "200" ] && { echo "candidate ready"; exit 0; }
+            echo "  attempt $i: HTTP $CODE"
+            sleep 5
+          done
+          echo "Candidate never became ready — not shifting any traffic to it."
+          exit 1
+
+      - name: Canary — 10%
+        run: |
+          gcloud run services update-traffic "$SERVICE" --region="$REGION" \
+            --to-revisions="${{ steps.deploy_candidate.outputs.revision }}=10" --quiet
+          echo "10% of traffic on the candidate. Watching for 60s."
+
+      - name: Watch error rate
+        # A real bake would query the 5xx ratio from Cloud Monitoring. Log-based metrics
+        # need a few minutes to populate, so a 60s window would read "no data" and pass
+        # regardless of what is happening — a check that cannot fail is worse than none,
+        # because it is believed.
+        #
+        # So this probes the live endpoint directly and fails on any non-200. Honest about
+        # what it is: a liveness check on the canary, not a statistical bake.
+        run: |
+          URL=$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')
+          FAILURES=0
+          for i in $(seq 1 12); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz" || echo 000)
+            [ "$CODE" != "200" ] && FAILURES=$((FAILURES+1)) && echo "  probe $i: HTTP $CODE"
+            sleep 5
+          done
+          echo "$FAILURES failures over 12 probes"
+          # if/then, NOT `[ ... ] && exit 1`. GitHub runs steps under `bash -e`, where a
+          # false test in an && chain returns 1 and fails the step — so the healthy path
+          # would trigger a rollback. A guard that fires on success is worse than none.
+          if [ "$FAILURES" -gt 2 ]; then
+            echo "Too many failures on the canary — failing the deploy to trigger rollback."
+            exit 1
+          fi
+
+      - name: Promote to 100%
+        run: |
+          gcloud run services update-traffic "$SERVICE" --region="$REGION" \
+            --to-revisions="${{ steps.deploy_candidate.outputs.revision }}=100" --quiet
+          echo "Candidate now serving 100%."
+
+      - name: Rollback on failure
+        # Fires if ANY step above failed after traffic moved. Instant and requires no
+        # rebuild, because the previous revision was never deleted — that is the entire
+        # reason to use revision traffic-splitting rather than a rolling update.
+        #
+        # Skipped on a first deploy, when there is no previous revision to return to.
+        if: failure() && steps.snapshot.outputs.revision != ''
+        run: |
+          echo "Deploy failed — returning 100% of traffic to ${{ steps.snapshot.outputs.revision }}"
+          gcloud run services update-traffic "$SERVICE" --region="$REGION" \
+            --to-revisions="${{ steps.snapshot.outputs.revision }}=100" --quiet
+          echo "Rolled back. The failed revision still exists for inspection."
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deploy: ${{ job.status }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`$REGISTRY:${GITHUB_SHA::7}\` |"
+            echo "| Candidate | \`${{ steps.deploy_candidate.outputs.revision }}\` |"
+            echo "| Rollback target | \`${{ steps.snapshot.outputs.revision || 'none' }}\` |"
+            echo "| URL | https://flagsvc-production-wqwagzrz3q-el.a.run.app |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -49,9 +49,19 @@ async def _create_test_database() -> None:
 
     CREATE DATABASE cannot run inside a transaction and cannot run from a connection to
     the database being created, hence the separate admin connection.
+
+    Host and port are parsed out of DATABASE_URL rather than hardcoded. They were briefly
+    pinned to localhost:5433 — the port docker-compose.dev.yml publishes to dodge a native
+    Postgres on this machine — which is a fact about one laptop, not about the service.
+    A CI runner publishes 5432 and the hardcoded value fails there and only there.
     """
+    url = settings.database_url
     admin = await asyncpg.connect(
-        user="flagsvc", password="flagsvc", database="postgres", host="localhost", port=5433
+        user=url.hosts()[0]["username"],
+        password=url.hosts()[0]["password"],
+        database="postgres",  # the one database guaranteed to exist
+        host=url.hosts()[0]["host"],
+        port=url.hosts()[0]["port"],
     )
     try:
         exists = await admin.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", TEST_DB)

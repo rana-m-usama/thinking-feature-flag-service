@@ -92,8 +92,16 @@ app.include_router(flags.router)
 app.include_router(evaluate.router)
 
 
-@app.get("/healthz", tags=["operations"], summary="Liveness probe")
-async def healthz() -> dict[str, str]:
+# NOT /healthz. That path is intercepted by Google's frontend on Cloud Run and never
+# reaches the container — a request to /healthz returns Google's own HTML 404, while a
+# request to /healthzz (which this app does not define) reaches FastAPI and returns its
+# JSON 404. The route is fine; the path is unusable on this platform.
+#
+# Cost: a canary that probed /healthz could never pass, so every deploy rolled back to a
+# placeholder while the candidate was provably healthy on /readyz. Locally /healthz works
+# perfectly, which is exactly what made it hard to see.
+@app.get("/livez", tags=["operations"], summary="Liveness probe")
+async def livez() -> dict[str, str]:
     """Is the process alive?
 
     Checks nothing else, deliberately. If this probed Postgres, a database blip would

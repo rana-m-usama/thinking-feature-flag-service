@@ -270,7 +270,7 @@ resource "google_monitoring_uptime_check_config" "health" {
   period       = "300s"
 
   http_check {
-    path         = "/healthz"
+    path         = "/livez"
     port         = 443
     use_ssl      = true
     validate_ssl = true
@@ -316,7 +316,7 @@ resource "google_monitoring_alert_policy" "uptime" {
   notification_channels = [google_monitoring_notification_channel.email.id]
 
   documentation {
-    content   = "/healthz is failing from multiple probe regions. This endpoint checks only that the process is alive — if it is down, the container is not running, not merely degraded. Check Cloud Run revision status and container logs for a startup crash."
+    content   = "/livez is failing from multiple probe regions. This endpoint checks only that the process is alive — if it is down, the container is not running, not merely degraded. Check Cloud Run revision status and container logs for a startup crash."
     mime_type = "text/markdown"
   }
 }

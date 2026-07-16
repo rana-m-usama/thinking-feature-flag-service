@@ -113,7 +113,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     the component that exists to protect availability.
     """
 
-    _EXEMPT = frozenset({"/healthz", "/readyz", "/metrics", "/docs", "/redoc", "/openapi.json"})
+    _EXEMPT = frozenset({"/livez", "/readyz", "/metrics", "/docs", "/redoc", "/openapi.json"})
 
     async def dispatch(self, request: Request, call_next) -> Response:
         if not settings.rate_limit_enabled or request.url.path in self._EXEMPT:

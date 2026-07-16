@@ -65,10 +65,10 @@ USER app
 
 EXPOSE 8080
 
-# Liveness only — see the docstring on /healthz. Probing the database here would make a
+# Liveness only — see the docstring on /livez. Probing the database here would make a
 # database blip restart every container, which helps nobody.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD curl -fsS "http://localhost:${PORT}/healthz" || exit 1
+    CMD curl -fsS "http://localhost:${PORT}/livez" || exit 1
 
 # Single worker per container on purpose. Cloud Run scales by adding instances, so a
 # process manager inside the container just fights the platform's own autoscaler for

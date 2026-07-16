@@ -211,8 +211,8 @@ jobs:
 
       - name: Smoke test the candidate
         # Against the candidate's OWN url, which serves 0% of production traffic.
-        # /readyz, not /healthz: readiness actually probes Postgres, so this proves the
-        # revision can reach the database through the VPC. /healthz only proves the
+        # /readyz, not /livez: readiness actually probes Postgres, so this proves the
+        # revision can reach the database through the VPC. /livez only proves the
         # process is alive, which a container with a broken DATABASE_URL also manages.
         run: |
           URL="${{ steps.deploy_candidate.outputs.url }}"
@@ -238,7 +238,7 @@ jobs:
         #
         # The service URL honours the traffic split, so at 10% canary, ~90% of probes land
         # on the OLD revision. On the very first deploy the old revision is Google's
-        # placeholder image, which has no /healthz — so the probes 404, the check blamed
+        # placeholder image, which has no /livez — so the probes 404, the check blamed
         # the candidate, and the rollback restored 100% traffic TO the placeholder, away
         # from a candidate that had just passed its smoke test. The safety mechanism made
         # things strictly worse.
@@ -255,7 +255,7 @@ jobs:
           URL="${{ steps.deploy_candidate.outputs.url }}"
           FAILURES=0
           for i in $(seq 1 12); do
-            CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz" || echo 000)
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/livez" || echo 000)
             [ "$CODE" != "200" ] && FAILURES=$((FAILURES+1)) && echo "  probe $i: HTTP $CODE"
             sleep 5
           done
@@ -299,7 +299,7 @@ jobs:
           gcloud run services update-traffic "$SERVICE" --region="$REGION" \
             --to-revisions="$PREV=100" --quiet
           sleep 10
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/healthz" || echo 000)
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "$URL/livez" || echo 000)
           if [ "$CODE" = "200" ]; then
             echo "Rolled back to $PREV. The failed revision still exists for inspection."
           else

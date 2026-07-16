@@ -225,12 +225,12 @@ resource "google_cloud_run_v2_service" "main" {
         }
       }
 
-      # Liveness. Deliberately /healthz, which checks nothing but the process — see the
+      # Liveness. Deliberately /livez, which checks nothing but the process — see the
       # docstring in app/main.py. Probing the database here would make a Cloud SQL blip
       # restart every container, converting a degraded database into a total outage.
       liveness_probe {
         http_get {
-          path = "/healthz"
+          path = "/livez"
         }
         initial_delay_seconds = 10
         period_seconds        = 30
